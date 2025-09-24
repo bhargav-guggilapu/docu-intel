@@ -1,6 +1,6 @@
 import { nowIso } from "../utils/utils";
 
-const API_BASE = "http://chatbot.dev.az.konfigai.com";
+const API_BASE = "https://chatbot.dev.az.konfigai.com";
 
 function toError(res, path) {
   const err = new Error(`${path} failed: ${res.status}`);
