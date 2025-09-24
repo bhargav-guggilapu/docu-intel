@@ -1,6 +1,6 @@
 import { nowIso } from "../utils/utils";
 
-const API_BASE = "http://4.213.208.235";
+const API_BASE = "https://4.187.210.124.nip.io";
 
 function toError(res, path) {
   const err = new Error(`${path} failed: ${res.status}`);
