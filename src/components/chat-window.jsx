@@ -5,6 +5,8 @@ import {
   useState,
   useCallback,
   Fragment,
+  forwardRef,
+  useImperativeHandle,
 } from "react";
 import {
   Box,
@@ -19,6 +21,8 @@ import {
   useTheme,
   Tooltip,
   Button,
+  LinearProgress,
+  Alert,
 } from "@mui/material";
 import {
   ArrowBack,
@@ -27,9 +31,9 @@ import {
   Person,
   FiberManualRecord,
 } from "@mui/icons-material";
+import { alpha } from "@mui/material/styles";
 import ThinkingIndicator from "./thinking-indicator";
 import {
-  genId,
   CHAT_SUGGESTIONS,
   headerLabel,
   messageLabel,
@@ -37,6 +41,7 @@ import {
   formatDate,
   formatTime,
 } from "../utils/utils";
+import { useData } from "../contexts/data-context";
 
 /* chips for docs */
 function DocChip({ doc, inverted = false }) {
@@ -83,7 +88,6 @@ function DateDivider({ label }) {
 function MessageBubble({ m, isInsight }) {
   const theme = useTheme();
   const isUser = m.type === "user";
-
   const PRIMARY = isInsight
     ? theme.palette.info.main
     : theme.palette.success.main;
@@ -113,7 +117,6 @@ function MessageBubble({ m, isInsight }) {
             <SmartToy sx={{ fontSize: 18 }} />
           </Avatar>
         )}
-
         <Box
           sx={{
             maxWidth: "72%",
@@ -134,7 +137,6 @@ function MessageBubble({ m, isInsight }) {
           <Typography variant="body1" sx={{ lineHeight: 1.6 }}>
             {m.content}
           </Typography>
-
           {!!m.docs?.length && (
             <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mt: 1.25 }}>
               {m.docs.map((d) => (
@@ -143,7 +145,6 @@ function MessageBubble({ m, isInsight }) {
             </Box>
           )}
         </Box>
-
         {isUser && (
           <Avatar
             sx={{ bgcolor: "#111827", color: "#fff", width: 32, height: 32 }}
@@ -159,7 +160,6 @@ function MessageBubble({ m, isInsight }) {
 function FollowUpChips({ items = [], onPick, isInsight }) {
   const theme = useTheme();
   const tone = isInsight ? theme.palette.info.main : theme.palette.success.main;
-
   return (
     <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
       {items.map((q) => (
@@ -188,22 +188,53 @@ function FollowUpChips({ items = [], onPick, isInsight }) {
   );
 }
 
-export default function ChatWindow({
-  chat,
-  messages = [],
-  onAddMessage,
-  onCreateChat,
-  onBack,
-  embedded = false,
-  starterMessage,
-}) {
+const ChatWindow = forwardRef(function ChatWindow(
+  { chat, onCreateChat, onBack, embedded = false, starterMessage },
+  ref
+) {
   const theme = useTheme();
+  const {
+    sendMessage,
+    selectMessages,
+    loadMessages,
+    messagesVersion,
+    setMessage,
+  } = useData();
+
   const [inputValue, setInputValue] = useState(starterMessage || "");
   const [isThinking, setIsThinking] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [sendError, setSendError] = useState(null);
   const [now, setNow] = useState(() => new Date());
   const messagesEndRef = useRef(null);
 
-  // keep relative labels fresh
+  const autoAskedByThread = useRef(new Set());
+  const fetchedHistoryRef = useRef(new Set());
+  const sendRef = useRef(null);
+
+  const isInsight = chat.chatType === "insight";
+  const PRIMARY = isInsight
+    ? theme.palette.info.main
+    : theme.palette.success.main;
+
+  const messages = useMemo(
+    () => selectMessages(chat.id),
+    [messagesVersion, chat.id, selectMessages]
+  );
+
+  const filteredMessages = useMemo(() => {
+    if (!isInsight) return messages;
+    let skipped = false;
+    return messages.filter((m) => {
+      if (!skipped && m.type === "user") {
+        skipped = true;
+        return false;
+      }
+      return true;
+    });
+  }, [messages, isInsight]);
+
   useEffect(() => {
     const idTimer = setInterval(() => setNow(new Date()), 30000);
     return () => clearInterval(idTimer);
@@ -211,75 +242,97 @@ export default function ChatWindow({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isThinking]);
+  }, [filteredMessages, isThinking]);
 
   const lastAiMessageId = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i]?.type === "ai") return messages[i].id;
-    }
+    for (let i = filteredMessages.length - 1; i >= 0; i--)
+      if (filteredMessages[i]?.type === "ai") return filteredMessages[i].id;
     return null;
-  }, [messages]);
+  }, [filteredMessages]);
 
-  const isInsight = chat.chatType === "insight";
-  const PRIMARY = isInsight
-    ? theme.palette.info.main
-    : theme.palette.success.main;
+  /** Load history on thread change — fetch ONCE per chat id (strict-mode safe) */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!chat?.id) return;
+      if (fetchedHistoryRef.current.has(chat.id)) return;
+      fetchedHistoryRef.current.add(chat.id);
 
-  const sendMessage = useCallback(
-    (text) => {
+      setIsLoadingHistory(true);
+      setLoadError(null);
+      try {
+        const chatType = isInsight ? "insight" : "question";
+        await loadMessages(chat.id, chatType);
+
+        if (cancelled) return;
+
+        if (isInsight && !autoAskedByThread.current.has(chat.id)) {
+          const loaded = selectMessages(chat.id) || [];
+          const isEmpty = loaded.length === 0;
+          const q = (chat?.insightData?.summary || chat?.title || "").trim();
+          if (isEmpty && q) {
+            autoAskedByThread.current.add(chat.id);
+            await sendRef.current?.(q);
+          }
+        }
+      } catch (err) {
+        fetchedHistoryRef.current.delete(chat.id);
+        if (!cancelled) setLoadError("Could not load chat history.");
+      } finally {
+        setIsLoadingHistory(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chat?.id, isInsight, loadMessages, selectMessages]);
+
+  /** Manual send (click/Enter) */
+  const send = useCallback(
+    async (text) => {
       const content = (typeof text === "string" ? text : inputValue).trim();
       if (!content) return;
-
-      const userMsg = {
-        id: genId("m"),
-        type: "user",
-        content,
-        createdAt: new Date().toISOString(),
-      };
-      onAddMessage?.(userMsg);
-      if (typeof text !== "string") setInputValue("");
+      setSendError(null);
       setIsThinking(true);
-
-      // mock AI reply; swap out with real service later
-      setTimeout(() => {
-        const aiMsg = {
-          id: genId("m"),
-          type: "ai",
-          content: "Here’s a structured response with insights and links.",
-          createdAt: new Date().toISOString(),
-          docs: [{ id: genId("doc"), name: "Summary.pdf", kind: "PDF" }],
-          followUps: isInsight
-            ? ["Show decisions", "Who decided what?", "Attach minutes"]
-            : ["Summarize latest docs", "Show related files", "Draft an email"],
-        };
-        onAddMessage?.(aiMsg);
+      try {
+        const chatType = isInsight ? "insight" : "question";
+        setMessage(chat.id, content);
+        if (typeof text !== "string") setInputValue("");
+        await sendMessage(chat.id, content, chatType);
+      } catch (err) {
+        setSendError("Failed to send. Please try again.");
+      } finally {
         setIsThinking(false);
-      }, 800);
+      }
     },
-    [inputValue, isInsight, onAddMessage]
+    [inputValue, isInsight, chat?.id, sendMessage, setMessage]
   );
+
+  sendRef.current = send;
+  useImperativeHandle(ref, () => ({ triggerSend: (text) => send(text) }));
 
   const onKeyDown = useCallback(
     (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        sendMessage();
+        send();
       }
     },
-    [sendMessage]
+    [send]
   );
 
-  // suggestion bar logic
-  const isNewChat = messages.length === 0 && !isInsight;
-  const isEmptyChat = chat.chatType === "regular" && messages.length === 0;
+  const isNewChat = filteredMessages.length === 0 && !isInsight;
+  const isEmptyChat =
+    chat.chatType === "regular" && filteredMessages.length === 0;
 
-  // group messages by day
   const sections = useMemo(() => {
-    if (!messages.length) return [];
+    if (!filteredMessages.length) return [];
     const out = [];
     let currentKey = null;
-    messages.forEach((m) => {
-      const d = m.createdAt ? new Date(m.createdAt) : new Date();
+    filteredMessages.forEach((m) => {
+      let d = m.createdAt ? new Date(m.createdAt) : new Date();
+      if (isNaN(d.getTime())) d = new Date();
       const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
       if (key !== currentKey) {
         out.push({ header: headerLabel(d, now), items: [] });
@@ -288,11 +341,10 @@ export default function ChatWindow({
       out[out.length - 1].items.push({ ...m, _d: d });
     });
     return out;
-  }, [messages, now]);
+  }, [filteredMessages, now]);
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Header */}
       <Paper
         variant="outlined"
         sx={{
@@ -309,9 +361,7 @@ export default function ChatWindow({
             <ArrowBack />
           </IconButton>
         )}
-
         <FiberManualRecord fontSize="small" sx={{ color: PRIMARY, mr: 0.25 }} />
-
         <Typography
           variant="h6"
           sx={{
@@ -324,7 +374,6 @@ export default function ChatWindow({
         >
           {chat.title}
         </Typography>
-
         {!isEmptyChat && (
           <Button
             onClick={onCreateChat}
@@ -342,8 +391,7 @@ export default function ChatWindow({
         )}
       </Paper>
 
-      {/* Suggestions — only for brand-new Chat */}
-      {isNewChat && (
+      {!isLoadingHistory && isNewChat && (
         <Box
           sx={{
             px: 2,
@@ -359,7 +407,7 @@ export default function ChatWindow({
             <Chip
               key={s}
               label={s}
-              onClick={() => sendMessage(s)}
+              onClick={() => send(s)}
               size="small"
               clickable
               sx={(t) => ({
@@ -399,7 +447,18 @@ export default function ChatWindow({
         </Box>
       )}
 
-      {/* Messages */}
+      {/* History loader — themed to Chats (green) or Insights (blue) */}
+      {isLoadingHistory && (
+        <LinearProgress
+          sx={{
+            backgroundColor: alpha(PRIMARY, 0.12),
+            "& .MuiLinearProgress-bar": {
+              backgroundColor: PRIMARY,
+            },
+          }}
+        />
+      )}
+
       <Box
         sx={{
           flex: 1,
@@ -410,6 +469,16 @@ export default function ChatWindow({
           ...scrollbar(theme, PRIMARY),
         }}
       >
+        {loadError && (
+          <Alert
+            severity="error"
+            sx={{ mb: 2 }}
+            onClose={() => setLoadError(null)}
+          >
+            {loadError}
+          </Alert>
+        )}
+
         {sections.map((section) => (
           <Box key={section.header} sx={{ mb: 1.5 }}>
             <DateDivider label={section.header} />
@@ -421,7 +490,6 @@ export default function ChatWindow({
                 <Fragment key={m.id}>
                   <Box sx={{ mb: 2 }}>
                     <MessageBubble m={m} isInsight={isInsight} />
-                    {/* Follow-ups from data (AI messages only) */}
                     {m.type === "ai" &&
                       m.id === lastAiMessageId &&
                       Array.isArray(m.followUps) &&
@@ -436,7 +504,7 @@ export default function ChatWindow({
                         >
                           <FollowUpChips
                             items={m.followUps}
-                            onPick={(text) => sendMessage(text)}
+                            onPick={(text) => send(text)}
                             isInsight={isInsight}
                           />
                         </Box>
@@ -486,11 +554,21 @@ export default function ChatWindow({
             </Box>
           </Box>
         )}
+
+        {/* Anchor for auto-scroll */}
         <div ref={messagesEndRef} />
       </Box>
 
-      {/* Composer */}
       <Paper variant="outlined" sx={{ px: 1.5, py: 1, borderRadius: 0 }}>
+        {sendError && (
+          <Alert
+            severity="error"
+            sx={{ mb: 1 }}
+            onClose={() => setSendError(null)}
+          >
+            {sendError}
+          </Alert>
+        )}
         <Box sx={{ display: "flex", alignItems: "flex-end", gap: 1 }}>
           <TextField
             fullWidth
@@ -518,7 +596,7 @@ export default function ChatWindow({
             }}
           />
           <IconButton
-            onClick={() => sendMessage()}
+            onClick={() => send()}
             disabled={!inputValue.trim() || isThinking}
             sx={{
               bgcolor: PRIMARY,
@@ -533,4 +611,6 @@ export default function ChatWindow({
       </Paper>
     </Box>
   );
-}
+});
+
+export default ChatWindow;

@@ -1,55 +1,44 @@
-export const LS_KEY = "ei-store-v1";
-
 export const CHAT_SUGGESTIONS = [
   "Summarize latest docs",
   "Show related files",
   "Draft an email",
 ];
 
-/* ---------------- ids & timestamps ---------------- */
-export function makeId(prefix = "id") {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-export function genId(prefix = "id") {
-  return makeId(prefix);
-} // b/c for chat-window
-export function daysAgo(n) {
+const fmtTime = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+});
+const fmtDateYMD = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+});
+const fmtMonthDay = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "2-digit",
+});
+
+export const daysAgo = (n) => {
   const d = new Date();
   d.setDate(d.getDate() - Number(n || 0));
   return d;
-}
-export const iso = (d) => (d instanceof Date ? d.toISOString() : d);
+};
 
-/* ---------------- date & label helpers ------------- */
-export function isSameDay(a, b) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
+export const isSameDay = (a, b) =>
+  a.getFullYear() === b.getFullYear() &&
+  a.getMonth() === b.getMonth() &&
+  a.getDate() === b.getDate();
+
 export function isYesterday(d, now = new Date()) {
   const y = new Date(now);
   y.setDate(now.getDate() - 1);
   return isSameDay(d, y);
 }
-export function pad(n) {
-  return n < 10 ? `0${n}` : `${n}`;
-}
-export function formatTime(d) {
-  let h = d.getHours();
-  const m = pad(d.getMinutes());
-  const ampm = h >= 12 ? "PM" : "AM";
-  h = h % 12 || 12;
-  return `${h}:${m} ${ampm}`;
-}
-export function formatDate(d, locale) {
-  return d.toLocaleDateString(locale, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
+
+export const pad = (n) => (n < 10 ? `0${n}` : `${n}`);
+export const formatTime = (d) => fmtTime.format(d);
+export const formatDate = (d) => fmtDateYMD.format(d);
+
 export function messageLabel(d, now = new Date()) {
   const diffSec = Math.floor((now - d) / 1000);
   if (diffSec < 60) return "Just now";
@@ -57,16 +46,15 @@ export function messageLabel(d, now = new Date()) {
   if (isYesterday(d, now)) return "Yesterday";
   return formatDate(d);
 }
+
 export function headerLabel(d, now = new Date()) {
   if (isSameDay(d, now)) return "Today";
   if (isYesterday(d, now)) return "Yesterday";
   return formatDate(d);
 }
-export function parseDate(s) {
-  return new Date(s);
-}
 
-/* ---------------- styling (MUI scrollbar) ----------- */
+export const parseDate = (s) => new Date(s);
+
 export function scrollbar(theme, color) {
   const alpha = (clr, a) =>
     `rgba(${parseInt(clr.slice(1, 3), 16)}, ${parseInt(
@@ -94,32 +82,44 @@ export function scrollbar(theme, color) {
   };
 }
 
-/* ---------------- localStorage helpers -------------- */
-export function safeJsonParse(raw, fallback) {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return typeof fallback === "function" ? fallback() : fallback ?? null;
-  }
-}
-export function loadFromLocalStorage(key, fallbackFactory) {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return typeof fallbackFactory === "function" ? fallbackFactory() : null;
-}
-export function saveToLocalStorage(key, value) {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-    return true;
-  } catch {
-    return false;
-  }
+export function formatListDate(input) {
+  const d = new Date(input);
+  if (!(d instanceof Date) || isNaN(d)) return "";
+  const now = new Date();
+  if (isSameDay(d, now)) return "Today";
+  const yest = new Date(now);
+  yest.setDate(now.getDate() - 1);
+  if (isSameDay(d, yest)) return "Yesterday";
+  const sameYear = d.getFullYear() === now.getFullYear();
+  return sameYear ? fmtMonthDay.format(d) : fmtDateYMD.format(d);
 }
 
-/* ---------------- misc ------------------------------ */
-export function sortByUpdatedAtDesc(items, key = "updatedAt") {
-  return [...items].sort((a, b) => new Date(b[key]) - new Date(a[key]));
+export const nowIso = () => new Date().toISOString();
+
+export function makeUUID() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  const getBytes = () => {
+    if (globalThis.crypto?.getRandomValues) {
+      const b = new Uint8Array(16);
+      globalThis.crypto.getRandomValues(b);
+      return b;
+    }
+    try {
+      return require("crypto").randomBytes(16);
+    } catch {
+      throw new Error("No secure random source available");
+    }
+  };
+  const bytes = getBytes();
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(
+    ""
+  );
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
+    12,
+    16
+  )}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
-export const noop = () => {};

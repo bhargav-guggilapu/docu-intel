@@ -3,6 +3,7 @@ import React, {
   useMemo,
   forwardRef,
   useImperativeHandle,
+  Fragment,
 } from "react";
 import {
   Box,
@@ -25,6 +26,8 @@ import {
   DialogContent,
   DialogActions,
   Button,
+  Chip,
+  Skeleton,
 } from "@mui/material";
 import {
   Search,
@@ -40,52 +43,40 @@ import {
   Check,
   Close,
 } from "@mui/icons-material";
-import { parseDate, scrollbar } from "../utils/utils";
+import { alpha } from "@mui/material/styles";
+import { parseDate, scrollbar, formatListDate } from "../utils/utils";
+import { useData } from "../contexts/data-context";
 
 /* ---------- icons for insight types ---------- */
 function InsightIcon({ type }) {
   const size = "small";
   if (!type) return <InsertDriveFile fontSize={size} />;
-  const t = String(type).toLowerCase();
-  if (t.includes("meet")) return <EventNote fontSize={size} />;
-  if (t.includes("doc")) return <Description fontSize={size} />;
-  if (t.includes("record")) return <VideoLibrary fontSize={size} />;
-  if (t.includes("transcript") || t.includes("audio"))
-    return <Mic fontSize={size} />;
+  if (type === "MEETING") return <EventNote fontSize={size} />;
+  if (type === "DOCUMENT") return <Description fontSize={size} />;
+  if (type === "RECORDING") return <VideoLibrary fontSize={size} />;
+  if (type === "TRANSCRIPT" || type === "AUDIO") return <Mic fontSize={size} />;
   return <InsertDriveFile fontSize={size} />;
 }
 
 const ConversationList = forwardRef(function ConversationList(
-  {
-    onOpenChat,
-    defaultTab = "chats",
-    chats = [],
-    insights = [],
-    onRenameChat,
-    onDeleteChat,
-  },
+  { defaultTab = "chats", onOpenChat },
   ref
 ) {
   const theme = useTheme();
+  const { chats, insights, renameChat, deleteChat, isBooting } = useData();
   const [activeTab, setActiveTab] = useState(defaultTab === "insights" ? 1 : 0);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState({ tab: null, id: null });
 
-  // inline rename state
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
 
-  // menu + delete confirm
   const [menuEl, setMenuEl] = useState(null);
   const [menuForId, setMenuForId] = useState(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState(null);
 
   const isChats = activeTab === 0;
-  const visibleChats = useMemo(
-    () => chats.filter((c) => (c.messageCount ?? 0) > 0),
-    [chats]
-  );
-  const data = isChats ? visibleChats : insights;
+  const data = isChats ? chats : insights;
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -103,7 +94,6 @@ const ConversationList = forwardRef(function ConversationList(
     selectTab: (nameOrIndex) => {
       if (nameOrIndex === "insights" || nameOrIndex === 1) setActiveTab(1);
       else setActiveTab(0);
-      // reset transient UI
       setEditingId(null);
       setMenuEl(null);
       setMenuForId(null);
@@ -119,7 +109,6 @@ const ConversationList = forwardRef(function ConversationList(
     clearSelection: () => setSelected({ tab: null, id: null }),
   }));
 
-  /* ---------- actions ---------- */
   const openMenu = (e, id) => {
     e.stopPropagation();
     setMenuEl(e.currentTarget);
@@ -139,7 +128,7 @@ const ConversationList = forwardRef(function ConversationList(
   };
   const commitInlineRename = () => {
     const v = editValue.trim();
-    if (v && editingId) onRenameChat?.(editingId, v);
+    if (v && editingId) renameChat(editingId, v).catch(() => {});
     setEditingId(null);
   };
   const cancelInlineRename = () => {
@@ -149,9 +138,24 @@ const ConversationList = forwardRef(function ConversationList(
     ? theme.palette.info.main
     : theme.palette.success.main;
 
+  const renderSkeletonRows = (n = 8) => (
+    <Fragment>
+      {Array.from({ length: n }).map((_, i) => (
+        <Box key={`sk-${i}`} sx={{ px: 2, py: 1.25 }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+            <Skeleton variant="circular" width={32} height={32} />
+            <Box sx={{ flex: 1 }}>
+              <Skeleton variant="text" width="60%" />
+              <Skeleton variant="text" width="80%" />
+            </Box>
+          </Box>
+        </Box>
+      ))}
+    </Fragment>
+  );
+
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Tabs */}
       <Tabs
         value={activeTab}
         onChange={(_, v) => {
@@ -191,7 +195,6 @@ const ConversationList = forwardRef(function ConversationList(
         <Tab label="Insights" />
       </Tabs>
 
-      {/* Search */}
       <Box sx={{ p: 1.5 }}>
         <TextField
           fullWidth
@@ -226,231 +229,328 @@ const ConversationList = forwardRef(function ConversationList(
         />
       </Box>
 
-      {/* List */}
       <List
         dense
         disablePadding
         sx={{ flex: 1, overflowY: "auto", ...scrollbar(theme, PRIMARY) }}
       >
-        {filtered.map((item, idx) => {
-          const rowSelected =
-            (isChats && selected.tab === "chats" && selected.id === item.id) ||
-            (!isChats &&
-              selected.tab === "insights" &&
-              selected.id === item.id);
+        {isBooting
+          ? renderSkeletonRows()
+          : filtered.map((item, idx) => {
+              const dateLabel = formatListDate(item.updatedAt);
+              const rowSelected =
+                (isChats &&
+                  selected.tab === "chats" &&
+                  selected.id === item.id) ||
+                (!isChats &&
+                  selected.tab === "insights" &&
+                  selected.id === item.id);
+              const isEditing = editingId === item.id;
+              const handleRowClick = () => {
+                if (isEditing) return;
+                setSelected({
+                  tab: isChats ? "chats" : "insights",
+                  id: item.id,
+                });
+                onOpenChat(
+                  isChats
+                    ? { ...item, chatType: "regular" }
+                    : {
+                        id: item.id,
+                        title: item.title,
+                        timestamp: item.updatedAt,
+                        chatType: "insight",
+                        insightData: item,
+                      }
+                );
+              };
 
-          const isEditing = editingId === item.id;
-
-          const handleRowClick = () => {
-            if (isEditing) return;
-            setSelected({ tab: isChats ? "chats" : "insights", id: item.id });
-            onOpenChat(
-              isChats
-                ? { ...item, chatType: "regular" }
-                : {
-                    id: item.id,
-                    title: item.title,
-                    timestamp: item.date,
-                    chatType: "insight",
-                    insightData: item,
-                  }
-            );
-          };
-
-          return (
-            <Box key={item.id} sx={{ position: "relative" }}>
-              <ListItemButton
-                className="row"
-                disableRipple
-                disableTouchRipple
-                onClick={handleRowClick}
-                sx={{
-                  px: 2,
-                  py: 1.25,
-                  borderLeft: rowSelected
-                    ? `3px solid ${
-                        isChats
-                          ? theme.palette.success.main
-                          : theme.palette.info.main
-                      }`
-                    : "3px solid transparent",
-                  bgcolor: rowSelected
-                    ? theme.palette.mode === "dark"
-                      ? "#151C25"
-                      : "#EFF2F6"
-                    : "transparent",
-                  boxShadow: rowSelected
-                    ? theme.palette.mode === "dark"
-                      ? "0 0 0 1px rgba(148,163,184,0.08)"
-                      : "inset 0 -1px 0 rgba(0,0,0,0.04)"
-                    : "none",
-                  "&:hover": {
-                    backgroundColor:
-                      theme.palette.mode === "dark" ? "#121922" : "#F3F4F6",
-                    "& .row-actions": { opacity: 1 },
-                  },
-                }}
-              >
-                {/* Leading avatar */}
-                <Avatar
-                  sx={{
-                    width: 32,
-                    height: 32,
-                    mr: 1.5,
-                    ...(isChats
-                      ? {
-                          bgcolor:
-                            theme.palette.mode === "dark"
-                              ? "#0B3B2D"
-                              : "#ECFDF5",
-                          color:
-                            theme.palette.mode === "dark"
-                              ? "#8EF6C5"
-                              : "#065F46",
-                        }
-                      : {
-                          bgcolor:
-                            theme.palette.mode === "dark"
-                              ? "#0C2B6B"
-                              : "#EFF6FF",
-                          color:
-                            theme.palette.mode === "dark"
-                              ? "#99B8FF"
-                              : "#075985",
-                        }),
-                  }}
-                >
-                  {isChats ? (
-                    <ChatIcon fontSize="small" />
-                  ) : (
-                    <InsightIcon type={item.type} />
-                  )}
-                </Avatar>
-
-                {/* Title / summary — inline rename for CHATS only */}
-                <ListItemText
-                  primary={
-                    isChats && isEditing ? (
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          width: "100%",
-                        }}
-                      >
-                        <TextField
-                          autoFocus
-                          fullWidth
-                          size="small"
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onClick={(e) => e.stopPropagation()}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              commitInlineRename();
-                            }
-                            if (e.key === "Escape") {
-                              e.preventDefault();
-                              cancelInlineRename();
-                            }
-                          }}
-                          onBlur={commitInlineRename}
-                          InputProps={{
-                            endAdornment: (
-                              <Box
-                                sx={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  gap: 0.25,
-                                  mr: 0.25,
-                                }}
-                              >
-                                <IconButton
-                                  size="small"
-                                  color="success"
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                  }}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    commitInlineRename();
-                                  }}
-                                >
-                                  <Check fontSize="small" />
-                                </IconButton>
-                                <IconButton
-                                  size="small"
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                  }}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    cancelInlineRename();
-                                  }}
-                                >
-                                  <Close fontSize="small" />
-                                </IconButton>
-                              </Box>
-                            ),
-                          }}
-                          sx={{
-                            "& .MuiOutlinedInput-root": {
-                              height: 32,
-                              borderRadius: 1,
-                              pr: 0.75,
-                              "& fieldset": {
-                                borderColor: theme.palette.divider,
-                              },
-                              "&.Mui-focused fieldset": {
-                                borderColor: theme.palette.success.main,
-                              },
-                            },
-                          }}
-                        />
-                      </Box>
-                    ) : (
-                      <Typography
-                        variant="subtitle2"
-                        sx={{ fontWeight: rowSelected ? 800 : 600 }}
-                      >
-                        {item.title}
-                      </Typography>
-                    )
-                  }
-                  secondary={
-                    <Typography variant="body2" color="text.secondary">
-                      {isChats ? item.lastMessage : item.summary}
-                    </Typography>
-                  }
-                />
-
-                {/* 3-dots actions (Chats only). Hidden until row hover */}
-                {isChats && (
-                  <IconButton
-                    size="small"
-                    className="row-actions"
-                    onClick={(e) => openMenu(e, item.id)}
+              return (
+                <Box key={item.id} sx={{ position: "relative" }}>
+                  <ListItemButton
+                    className="row"
+                    disableRipple
+                    disableTouchRipple
+                    onClick={handleRowClick}
                     sx={{
-                      ml: 1,
-                      opacity: isEditing ? 0 : 0,
-                      transition: "opacity 120ms",
+                      position: "relative",
+                      px: 2,
+                      py: 1.25,
+                      borderLeft: rowSelected
+                        ? `3px solid ${
+                            isChats
+                              ? theme.palette.success.main
+                              : theme.palette.info.main
+                          }`
+                        : "3px solid transparent",
+                      bgcolor: rowSelected
+                        ? theme.palette.mode === "dark"
+                          ? "#151C25"
+                          : "#EFF2F6"
+                        : "transparent",
+                      boxShadow: rowSelected
+                        ? theme.palette.mode === "dark"
+                          ? "0 0 0 1px rgba(148,163,184,0.08)"
+                          : "inset 0 -1px 0 rgba(0,0,0,0.04)"
+                        : "none",
+                      "&:hover": {
+                        backgroundColor:
+                          theme.palette.mode === "dark" ? "#121922" : "#F3F4F6",
+                        "& .row-actions": { opacity: 1 },
+                      },
                     }}
                   >
-                    <MoreVert fontSize="small" />
-                  </IconButton>
-                )}
-              </ListItemButton>
+                    <Avatar
+                      sx={{
+                        width: 32,
+                        height: 32,
+                        mr: 1.5,
+                        ...(isChats
+                          ? {
+                              bgcolor:
+                                theme.palette.mode === "dark"
+                                  ? "#0B3B2D"
+                                  : "#ECFDF5",
+                              color:
+                                theme.palette.mode === "dark"
+                                  ? "#8EF6C5"
+                                  : "#065F46",
+                            }
+                          : {
+                              bgcolor:
+                                theme.palette.mode === "dark"
+                                  ? "#0C2B6B"
+                                  : "#EFF6FF",
+                              color:
+                                theme.palette.mode === "dark"
+                                  ? "#99B8FF"
+                                  : "#075985",
+                            }),
+                      }}
+                    >
+                      {isChats ? (
+                        <ChatIcon fontSize="small" />
+                      ) : (
+                        <InsightIcon type={item.type} />
+                      )}
+                    </Avatar>
+                    <ListItemText
+                      disableTypography
+                      primary={
+                        <Box sx={{ width: "100%" }}>
+                          {isChats && isEditing ? (
+                            <TextField
+                              autoFocus
+                              fullWidth
+                              size="small"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  commitInlineRename();
+                                }
+                                if (e.key === "Escape") {
+                                  e.preventDefault();
+                                  cancelInlineRename();
+                                }
+                              }}
+                              onBlur={commitInlineRename}
+                              InputProps={{
+                                endAdornment: (
+                                  <Box
+                                    sx={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 0.25,
+                                      mr: 0.25,
+                                    }}
+                                  >
+                                    <IconButton
+                                      size="small"
+                                      color="success"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                      }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        commitInlineRename();
+                                      }}
+                                    >
+                                      <Check fontSize="small" />
+                                    </IconButton>
+                                    <IconButton
+                                      size="small"
+                                      onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                      }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        cancelInlineRename();
+                                      }}
+                                    >
+                                      <Close fontSize="small" />
+                                    </IconButton>
+                                  </Box>
+                                ),
+                              }}
+                              sx={{
+                                "& .MuiOutlinedInput-root": {
+                                  height: 32,
+                                  borderRadius: 1,
+                                  pr: 0.75,
+                                  "& fieldset": {
+                                    borderColor: theme.palette.divider,
+                                  },
+                                  "&.Mui-focused fieldset": {
+                                    borderColor: theme.palette.success.main,
+                                  },
+                                },
+                              }}
+                            />
+                          ) : (
+                            <Box
+                              sx={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                width: "100%",
+                              }}
+                            >
+                              <Typography
+                                variant="subtitle2"
+                                sx={{
+                                  fontWeight: rowSelected ? 800 : 600,
+                                  pr: 1,
+                                }}
+                              >
+                                {item.title}
+                              </Typography>
+                              {!!dateLabel && (
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{ whiteSpace: "nowrap" }}
+                                >
+                                  {dateLabel}
+                                </Typography>
+                              )}
+                            </Box>
+                          )}
+                        </Box>
+                      }
+                      secondary={
+                        <Box sx={{ mt: 0.25 }}>
+                          {(() => {
+                            const summaryText = isChats
+                              ? item.lastMessage
+                              : item.summary;
+                            return summaryText ? (
+                              <Typography
+                                variant="body2"
+                                color="text.secondary"
+                                sx={{
+                                  display: "-webkit-box",
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: "vertical",
+                                  overflow: "hidden",
+                                }}
+                              >
+                                {summaryText}
+                              </Typography>
+                            ) : null;
+                          })()}
+                          {!isChats && (
+                            <Box
+                              sx={{
+                                display: "flex",
+                                gap: 1,
+                                flexWrap: "wrap",
+                                mt: 1.5,
+                              }}
+                            >
+                              {(item.tags ?? []).map((t, i) => (
+                                <Chip
+                                  key={`${item.id}-tag-${i}`}
+                                  label={t}
+                                  size="small"
+                                  variant="outlined"
+                                />
+                              ))}
+                            </Box>
+                          )}
+                        </Box>
+                      }
+                    />
+                    {isChats && !isEditing && (
+                      <IconButton
+                        size="small"
+                        className="row-actions"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openMenu(e, item.id);
+                        }}
+                        sx={(t) => ({
+                          position: "absolute",
+                          top: "50%",
+                          right: 8,
+                          transform: "translateY(-50%)",
+                          zIndex: 2,
+                          borderRadius: "50%",
 
-              {idx < filtered.length - 1 && <Divider />}
-            </Box>
-          );
-        })}
+                          bgcolor:
+                            t.palette.mode === "dark"
+                              ? alpha(t.palette.common.white, 0.5)
+                              : t.palette.common.white,
+                          color:
+                            t.palette.mode === "dark"
+                              ? t.palette.grey[900]
+                              : t.palette.text.secondary,
+                          border: `1px solid ${
+                            t.palette.mode === "dark"
+                              ? alpha(t.palette.common.white, 0.24)
+                              : t.palette.divider
+                          }`,
+                          boxShadow: t.palette.mode === "dark" ? "none" : 1,
+                          transition:
+                            "opacity 120ms, background-color 120ms, transform 80ms, box-shadow 120ms",
+                          opacity: isEditing || menuForId === item.id ? 1 : 0,
+                          "&:hover": {
+                            bgcolor:
+                              t.palette.mode === "dark"
+                                ? alpha(t.palette.common.white, 0.6)
+                                : "#f9fafb",
+                            transform: "translateY(-50%) scale(1.06)",
+                            opacity: 1,
+                            boxShadow:
+                              t.palette.mode === "dark"
+                                ? "0 0 0 1px rgba(255,255,255,0.12)"
+                                : 2,
+                          },
+                          "&.Mui-focusVisible": {
+                            outline: "none",
+                            opacity: 1,
+                            boxShadow:
+                              t.palette.mode === "dark"
+                                ? "0 0 0 2px rgba(255,255,255,0.24)"
+                                : "0 0 0 2px rgba(16,24,40,0.18)",
+                          },
+                        })}
+                      >
+                        <MoreVert fontSize="small" color="inherit" />
+                      </IconButton>
+                    )}
+                  </ListItemButton>
+
+                  {idx < filtered.length - 1 && <Divider />}
+                </Box>
+              );
+            })}
       </List>
 
-      {/* Row menu (styled) */}
       <Menu
         anchorEl={menuEl}
         open={Boolean(menuEl)}
@@ -492,7 +592,6 @@ const ConversationList = forwardRef(function ConversationList(
         </MenuItem>
       </Menu>
 
-      {/* Delete confirm dialog */}
       <Dialog
         open={Boolean(confirmDeleteId)}
         onClose={() => setConfirmDeleteId(null)}
@@ -512,7 +611,7 @@ const ConversationList = forwardRef(function ConversationList(
             onClick={() => {
               const id = confirmDeleteId;
               setConfirmDeleteId(null);
-              onDeleteChat?.(id);
+              deleteChat(id).catch(() => {});
               if (editingId === id) setEditingId(null);
               setSelected((sel) =>
                 sel?.id === id ? { tab: null, id: null } : sel
